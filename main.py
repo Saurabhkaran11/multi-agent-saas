@@ -41,6 +41,14 @@ class AppSettings(BaseSettings):
         default="https://api.tokenrouter.com/v1",
         alias="TOKENROUTER_BASE_URL",
     )
+    tokenrouter_analyst_model: str = Field(
+        default="qwen/qwen3.5-122b-a10b",
+        alias="TOKENROUTER_ANALYST_MODEL",
+    )
+    tokenrouter_director_model: str = Field(
+        default="z-ai/glm-5.1",
+        alias="TOKENROUTER_DIRECTOR_MODEL",
+    )
     market_data_api_key: str = Field(alias="MARKET_DATA_API_KEY")
     news_research_api_key: str = Field(alias="NEWS_RESEARCH_API_KEY")
     huggingface_token: str | None = Field(default=None, alias="HUGGINGFACE_TOKEN")
@@ -124,10 +132,15 @@ def _extract_message_content(response: Any) -> str:
 
 
 def _parse_json_object(raw_content: str, agent_name: str) -> dict[str, Any]:
+    cleaned_content = raw_content.strip()
+    if cleaned_content.startswith("```"):
+        cleaned_content = cleaned_content.removeprefix("```json").removeprefix("```")
+        cleaned_content = cleaned_content.removesuffix("```").strip()
+
     try:
-        parsed = json.loads(raw_content)
+        parsed = json.loads(cleaned_content)
     except json.JSONDecodeError as exc:
-        logger.exception("%s returned malformed JSON: %s", agent_name, raw_content)
+        logger.exception("%s returned malformed JSON: %s", agent_name, cleaned_content)
         raise RuntimeError(f"{agent_name} returned malformed JSON.") from exc
 
     if not isinstance(parsed, dict):
@@ -146,9 +159,10 @@ async def _run_market_analyst_agent(
 ) -> dict[str, Any]:
     logger.info("Running Market Analyst Agent for topic=%s.", topic)
     response = await client.chat.completions.create(
-        model="qwen-max",
-        max_tokens=500,
+        model=settings.tokenrouter_analyst_model,
+        max_tokens=1500,
         temperature=0.2,
+        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
@@ -201,20 +215,23 @@ async def _run_market_analyst_agent(
 async def _run_creative_video_director_agent(
     *,
     analyst_packet: dict[str, Any],
+    settings: AppSettings,
     client: AsyncOpenAI,
 ) -> dict[str, Any]:
     logger.info("Running Creative Video Director Agent.")
     response = await client.chat.completions.create(
-        model="glm-5.1",
-        max_tokens=800,
+        model=settings.tokenrouter_director_model,
+        max_tokens=2000,
         temperature=0.7,
+        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
                 "content": (
                     "You are The Creative Video Director Agent. Return only one strict "
                     "JSON object with no markdown. Convert market analysis into a "
-                    "15-second viral vertical finance storyboard."
+                    "15-second viral vertical finance storyboard. Keep every field "
+                    "concise enough to fit in one complete JSON response."
                 ),
             },
             {
@@ -231,6 +248,11 @@ async def _run_creative_video_director_agent(
                             "format": "vertical 9:16",
                             "duration_seconds": 15,
                             "style": "clear, high-retention, finance-native",
+                            "visual_prompts": (
+                                "Return a single compact string with three scene prompts, "
+                                "not an array, and keep it under 900 characters."
+                            ),
+                            "audio_script": "Keep narration under 65 words.",
                         },
                     }
                 ),
@@ -320,6 +342,7 @@ async def generate_content(request: Request, topic: str = Form(...)) -> JSONResp
         )
         director_packet = await _run_creative_video_director_agent(
             analyst_packet=analyst_packet,
+            settings=settings,
             client=tokenrouter_client,
         )
 
