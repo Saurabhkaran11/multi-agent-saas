@@ -14,11 +14,5 @@ python-dotenv==1.0.1
 # UNIFIED INFERENCE ROUTING (TokenRouter Adapter Interface)
 openai==1.14.1
 
-# LOCAL REASONING & FEATURE EXTRACTION PIPELINES
-transformers==4.38.2
-torch==2.2.1
-accelerate==0.27.2
-numpy==1.26.4
-
 # EXTENSIBILITY LOGISTICS
 httpx==0.25.2

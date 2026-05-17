@@ -13,8 +13,6 @@ from fastapi.templating import Jinja2Templates
 from openai import AsyncOpenAI
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from transformers import pipeline
-from transformers.pipelines import Pipeline
 
 from supabase_client import get_active_pipeline_history, save_agent_storyboard
 
@@ -48,6 +46,10 @@ class AppSettings(BaseSettings):
     tokenrouter_director_model: str = Field(
         default="z-ai/glm-5.1",
         alias="TOKENROUTER_DIRECTOR_MODEL",
+    )
+    enable_local_sentiment_model: bool = Field(
+        default=False,
+        alias="ENABLE_LOCAL_SENTIMENT_MODEL",
     )
     market_data_api_key: str = Field(alias="MARKET_DATA_API_KEY")
     news_research_api_key: str = Field(alias="NEWS_RESEARCH_API_KEY")
@@ -90,15 +92,45 @@ app = FastAPI(
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 
-def _get_sentiment_pipeline(request: Request) -> Pipeline:
-    sentiment_pipeline = getattr(request.app.state, "sentiment_pipeline", None)
-    if sentiment_pipeline is None:
-        logger.error("Sentiment pipeline was requested before startup completed.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Sentiment model is not ready.",
-        )
-    return sentiment_pipeline
+def _score_topic_sentiment(topic: str) -> float:
+    positive_terms = {
+        "accelerate",
+        "beat",
+        "breakout",
+        "bullish",
+        "growth",
+        "improve",
+        "momentum",
+        "rally",
+        "record",
+        "resistance",
+        "surge",
+        "upside",
+    }
+    negative_terms = {
+        "bearish",
+        "breakdown",
+        "compress",
+        "concern",
+        "decline",
+        "disappoint",
+        "fall",
+        "fear",
+        "risk",
+        "selloff",
+        "slow",
+        "weak",
+    }
+    tokens = {
+        token.strip(".,!?;:()[]{}\"'").lower()
+        for token in topic.split()
+        if token.strip(".,!?;:()[]{}\"'")
+    }
+    positive_score = len(tokens & positive_terms)
+    negative_score = len(tokens & negative_terms)
+    if positive_score == negative_score:
+        return 0.0
+    return max(-1.0, min(1.0, (positive_score - negative_score) / 6))
 
 
 def _normalize_sentiment(raw_result: dict[str, Any]) -> float:
@@ -271,7 +303,14 @@ async def startup_event() -> None:
     settings = get_settings()
     logger.info("Runtime environment=%s port=%s.", settings.environment, settings.port)
 
+    app.state.sentiment_pipeline = None
+    if not settings.enable_local_sentiment_model:
+        logger.info("Using lightweight sentiment scorer for deployment runtime.")
+        return
+
     try:
+        from transformers import pipeline
+
         app.state.sentiment_pipeline = await asyncio.to_thread(
             lambda: pipeline(
                 "sentiment-analysis",
@@ -317,14 +356,20 @@ async def generate_content(request: Request, topic: str = Form(...)) -> JSONResp
 
         settings = get_settings()
         tokenrouter_client = get_tokenrouter_client()
-        sentiment_pipeline = _get_sentiment_pipeline(request)
 
         logger.info("Generating multi-agent content for topic=%s.", normalized_topic)
-        sentiment_results = await asyncio.to_thread(sentiment_pipeline, normalized_topic)
-        if not sentiment_results:
-            raise RuntimeError("Local sentiment classifier returned no result.")
+        sentiment_pipeline = getattr(request.app.state, "sentiment_pipeline", None)
+        if sentiment_pipeline is None:
+            sentiment_score = _score_topic_sentiment(normalized_topic)
+        else:
+            sentiment_results = await asyncio.to_thread(
+                sentiment_pipeline,
+                normalized_topic,
+            )
+            if not sentiment_results:
+                raise RuntimeError("Local sentiment classifier returned no result.")
+            sentiment_score = _normalize_sentiment(sentiment_results[0])
 
-        sentiment_score = _normalize_sentiment(sentiment_results[0])
         market_bias = _map_market_bias(sentiment_score)
         logger.info(
             "Local sentiment complete for topic=%s score=%s market_bias=%s.",
