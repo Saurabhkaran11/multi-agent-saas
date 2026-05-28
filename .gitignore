@@ -1,17 +1,35 @@
+# Secrets and Environment
 .env
 .env.local
+.env.*
+envtest
+secrets.json
 
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.coverage
+.ipynb_checkpoints/
 
+# Virtual Environments
 venv/
 .venv/
-.venv311/
+.venv*/
+ENV/
 
+# OS Specific
 .DS_Store
+Thumbs.db
 
+# Logs
 *.log
+logs/
 
+# Build and Dependencies
 node_modules/
+dist/
+build/
+*.spec
